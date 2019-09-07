@@ -1,46 +1,51 @@
-from openpyxl import load_workbook
 from tkinter import *
-import winsound as ws
 import tkinter.scrolledtext as st
+import winsound as ws
+from collections import OrderedDict
+from functools import partial
+from concurrent import futures
+
+from openpyxl import load_workbook
 
 """Кортеж имен столбцов excel-таблицы"""
 LETTERS = ('M', 'N', 'O', 'P', 'Q', 'R')
 
 
-def append_into_table(file_name: str, table_name: str, page_name: str, tablets: int, targets: int):
-    """Функция использется для создания матрицы из элементов текстового файла
-    и дальнейшей распаковки элементов матрицы в нужные ячейки excel-таблицы.
-    В качестве разделителя используются отрицательные значения из текстового файла."""
-    with open(file_name) as file:
-        array = [row.strip() for row in file]
-
-    for elements in range(len(array)):
-        array[elements] = array[elements].split()
-
-    for elements in range(len(array)):
-        array[elements] = float(array[elements][1])
+def extract_data(file_name: str):
 
     matrix = []
 
-    for number in range(len(array)):
-        """Создаем список кортежей: матрицу изъятых из текстового файла элементов"""
-        if array[number] < 0:
-            matrix.append((array[number-3], array[number-2], array[number-1]))
-    matrix.append((array[-3], array[-2], array[-1]))
+    with open(file_name, "r") as file:
+        data = float(file.readline().strip().split()[1])
+        buffer_list = []
+        while data:
+            if data < 0:
+                matrix.append((buffer_list[-3], buffer_list[-2], buffer_list[-1]))
+                buffer_list.clear()
+            else:
+                buffer_list.append(data)
+            try:
+                data = float(file.readline().strip().split()[1])
+            except IndexError:
+                matrix.append((buffer_list[-3], buffer_list[-2], buffer_list[-1]))
+                break
+    return matrix
 
-    work_book = load_workbook(table_name, data_only=False)
-    page_value = work_book[page_name]
 
+def create_dictionary(matrix: list, letters: tuple, tablets: int, targets: int) -> dict:
+    matrix_dictionary = OrderedDict({})
     step = 0
-
     for targets_counter in range(targets):
-        """Изымаем из матрицы и распаковываем в нужные ячейки таблицы числовые значения"""
         for tablets_counter in range(tablets):
-            page_value[LETTERS[tablets_counter] + str(7 + 3 * targets_counter)].value = matrix[step][0]
-            page_value[LETTERS[tablets_counter] + str(8 + 3 * targets_counter)].value = matrix[step][1]
-            page_value[LETTERS[tablets_counter] + str(9 + 3 * targets_counter)].value = matrix[step][2]
-            work_book.save(table_name)
+            matrix_dictionary[letters[tablets_counter] + str(7 + 3 * targets_counter)] = matrix[step][0]
+            matrix_dictionary[letters[tablets_counter] + str(8 + 3 * targets_counter)] = matrix[step][1]
+            matrix_dictionary[letters[tablets_counter] + str(9 + 3 * targets_counter)] = matrix[step][2]
             step += 1
+    return matrix_dictionary
+
+
+def add_in_table(work_book, dict_key: str, dict_value: float):
+    work_book[dict_key].value = dict_value
 
 
 def help_btn():
@@ -120,6 +125,7 @@ class MainWindowClass(Frame):
         targ = int(self.input_targets_row.get())
         file_name = str(self.input_file_name_row.get())
         excel_table_name = str(self.input_table_name_row.get())
+        excel_page_name = str(self.input_page_name_row.get())
 
         if tabl > 6:
             """Проверяем, не введено ли больше, чем 6 таблеток"""
@@ -146,11 +152,17 @@ class MainWindowClass(Frame):
                     "mslx." in excel_table_name[-1:-6:-1]) or (
                     "xslx." in excel_table_name[-1:-6:-1]))
         try:
-            append_into_table(str(self.input_file_name_row.get()),
-                              str(self.input_table_name_row.get()),
-                              str(self.input_page_name_row.get()),
-                              int(self.input_tablets_row.get()),
-                              int(self.input_targets_row.get()))
+            work_book = load_workbook(excel_table_name, data_only=False)
+            page_value = work_book[excel_page_name]
+            matrix_dictionary = create_dictionary(extract_data(file_name), LETTERS, tabl, targ)
+            partial_add_in_table = partial(add_in_table, page_value)
+
+            with futures.ThreadPoolExecutor() as executor:
+                executor.map(partial_add_in_table, [x for x in matrix_dictionary],
+                             [matrix_dictionary[x] for x in matrix_dictionary])
+            work_book.save(excel_table_name)
+            work_book.close()
+
         except FileNotFoundError:
             """Проверка на наличие указанных файлов в текущей директории"""
             ChildWindows().file_not_found_error()
